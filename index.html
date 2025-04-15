@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub Repository Explorer with Detailed Node Diagram</title>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.22.20/babel.min.js"></script>
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
+    <!-- Use an older version of the Vis library -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.css">
+    <style>
+      body {
+        font-family: "Segoe UI", Helvetica, Arial, sans-serif;
+        margin: 0;
+        padding: 0;
+        background-color: #f6f8fa;
+        color: #24292e;
+      }
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      .header {
+        background-color: #24292e;
+        color: white;
+        padding: 20px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+      }
+      .header h1 {
+        margin: 0;
+        font-size: 24px;
+        display: flex;
+        align-items: center;
+      }
+      .header h1 i {
+        margin-right: 10px;
+      }
+      .search-container {
+        margin: 20px 0;
+        display: flex;
+      }
+      input[type="text"] {
+        flex: 1;
+        padding: 10px;
+        border: 1px solid #e1e4e8;
+        border-radius: 4px;
+        font-size: 16px;
+      }
+      button {
+        background-color: #0366d6;
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 16px;
+      }
+      button:hover {
+        background-color: #0353b4;
+      }
+      button:disabled {
+        background-color: #ccc;
+        cursor: not-allowed;
+      }
+      .error-message {
+        color: #e74c3c;
+        margin: 20px 0;
+        padding: 10px;
+        background-color: rgba(231, 76, 60, 0.1);
+        border-radius: 4px;
+      }
+      #network {
+        height: 500px;
+        border: 1px solid #ccc;
+        margin-top: 20px;
+      }
+      /* Container for commits and file list side by side */
+      #commitContainer {
+        display: flex;
+        gap: 20px;
+        margin-top: 20px;
+      }
+      #commitBox, #fileListBox {
+        flex: 1;
+        padding: 10px;
+        border: 1px solid #ccc;
+        overflow-y: auto;
+        max-height: 400px;
+      }
+      #fileListBox a {
+        text-decoration: none;
+        color: #0366d6;
+      }
+      #fileListBox a:hover {
+        text-decoration: underline;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div class="container">
+        <h1>Loading GitHub Repository Explorer...</h1>
+        <p>If this message persists there might be an issue with JavaScript loading.</p>
+      </div>
+    </div>
+    <!-- Load the older Vis library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.js"></script>
+    <script type="text/babel">
+      const { useState, useEffect, useRef } = React;
+
+      function App() {
+        const [username, setUsername] = useState('');
+        const [inputUsername, setInputUsername] = useState('');
+        const [repos, setRepos] = useState([]);
+        const [loading, setLoading] = useState(false);
+        const [error, setError] = useState(null);
+        const networkRef = useRef(null);
+        const nodesDataRef = useRef(null);
+        const edgesDataRef = useRef(null);
+
+        // Unique node identifiers
+        let repoNodeIdCounter = 100;
+        let branchNodeIdCounter = 10000;
+
+        // Build the initial graph with the central user and repository nodes
+        const buildInitialGraph = () => {
+          const nodes = new vis.DataSet([]);
+          const edges = new vis.DataSet([]);
+          // Central user node
+          nodes.add({ id: 1, label: username, type: "user" });
+          // Mapping to track repository node identifiers
+          const repoIdMapping = {};
+
+          repos.forEach((repo) => {
+            nodes.add({
+              id: repoNodeIdCounter,
+              label: repo.name,
+              type: "repo",
+              repoFullName: repo.full_name,
+              defaultBranch: repo.default_branch,
+              commitsUrl: repo.commits_url.replace('{/sha}','')
+            });
+            edges.add({ from: 1, to: repoNodeIdCounter });
+            repoIdMapping[repo.full_name] = repoNodeIdCounter;
+            repoNodeIdCounter++;
+          });
+
+          nodesDataRef.current = nodes;
+          edgesDataRef.current = edges;
+
+          const container = document.getElementById('network');
+          networkRef.current = new vis.Network(container, { nodes: nodes, edges: edges }, {
+            layout: { hierarchical: false },
+            physics: { stabilization: true }
+          });
+
+          // Handle clicks on nodes
+          networkRef.current.on("click", function(params) {
+            if (params.nodes.length > 0) {
+              const nodeId = params.nodes[0];
+              const nodeData = nodes.get(nodeId);
+              handleNodeClick(nodeData);
+            }
+          });
+
+          // For each repository fetch its branches and add branch nodes to the graph
+          repos.forEach((repo) => {
+            fetch(`https://api.github.com/repos/${repo.full_name}/branches`)
+              .then((response) => response.json())
+              .then((branches) => {
+                branches.forEach((branch) => {
+                  nodes.add({
+                    id: branchNodeIdCounter,
+                    label: branch.name,
+                    type: "branch",
+                    repoFullName: repo.full_name,
+                    branchName: branch.name
+                  });
+                  // Connect branch node to its repository node
+                  edges.add({ from: repoIdMapping[repo.full_name], to: branchNodeIdCounter });
+                  branchNodeIdCounter++;
+                });
+              })
+              .catch((err) => {
+                console.error("Error fetching branches for " + repo.full_name, err);
+              });
+          });
+        };
+
+        // When a repository or branch node is clicked fetch commits and file list
+        const handleNodeClick = (nodeData) => {
+          let repoFullName = nodeData.repoFullName;
+          let branchName = "";
+          if (nodeData.type === "repo") {
+            branchName = nodeData.defaultBranch;
+          } else if (nodeData.type === "branch") {
+            branchName = nodeData.branchName;
+          } else {
+            document.getElementById('commitContainer').innerHTML = "<p>No data to display for the central user node.</p>";
+            return;
+          }
+
+          // Fetch commits
+          const commitsUrl = `https://api.github.com/repos/${repoFullName}/commits?sha=${branchName}&per_page=10`;
+          fetch(commitsUrl)
+            .then(response => response.json())
+            .then(commits => {
+              let commitHtml = `<h3>Commits for ${repoFullName} on branch ${branchName}</h3>`;
+              if (Array.isArray(commits) && commits.length > 0) {
+                commits.forEach(commit => {
+                  const commitDate = new Date(commit.commit.author.date).toLocaleDateString('en-GB', {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric'
+                  });
+                  commitHtml += `<div style="border-bottom: 1px solid #ccc; padding: 5px 0;">`;
+                  commitHtml += `<strong>${commit.sha.substring(0,7)}</strong>: ${commit.commit.message}<br><small>${commitDate}</small>`;
+                  commitHtml += `</div>`;
+                });
+              } else {
+                commitHtml += "<p>No commits found.</p>";
+              }
+              updateCommitBox(commitHtml);
+            })
+            .catch(err => {
+              updateCommitBox("<p>Error fetching commits: " + err.message + "</p>");
+            });
+
+          // Fetch branch information to get the tree sha and then the file list
+          fetch(`https://api.github.com/repos/${repoFullName}/branches/${branchName}`)
+            .then(response => response.json())
+            .then(branchInfo => {
+              const treeSha = branchInfo.commit.commit.tree.sha;
+              return fetch(`https://api.github.com/repos/${repoFullName}/git/trees/${treeSha}?recursive=1`);
+            })
+            .then(response => response.json())
+            .then(fileTree => {
+              let fileHtml = `<h3>Files for ${repoFullName} on branch ${branchName}</h3>`;
+              if (fileTree && fileTree.tree && Array.isArray(fileTree.tree)) {
+                // Filter entries where type is blob (files)
+                const files = fileTree.tree.filter(entry => entry.type === "blob");
+                if (files.length > 0) {
+                  fileHtml += "<ul style='list-style-type: none; padding-left: 0;'>";
+                  files.forEach(file => {
+                    // Build GitHub URL for the file
+                    const fileUrl = `https://github.com/${repoFullName}/blob/${branchName}/${file.path}`;
+                    fileHtml += `<li><a href="${fileUrl}" target="_blank">${file.path}</a></li>`;
+                  });
+                  fileHtml += "</ul>";
+                } else {
+                  fileHtml += "<p>No files found.</p>";
+                }
+              } else {
+                fileHtml += "<p>No files found.</p>";
+              }
+              updateFileListBox(fileHtml);
+            })
+            .catch(err => {
+              updateFileListBox("<p>Error fetching file list: " + err.message + "</p>");
+            });
+        };
+
+        // Helper functions to update the commit and file list boxes
+        const updateCommitBox = (html) => {
+          const commitBox = document.getElementById('commitBox');
+          if (commitBox) {
+            commitBox.innerHTML = html;
+          }
+        };
+
+        const updateFileListBox = (html) => {
+          const fileListBox = document.getElementById('fileListBox');
+          if (fileListBox) {
+            fileListBox.innerHTML = html;
+          }
+        };
+
+        // Handle the search form submission to fetch repositories for the given username
+        const handleSubmit = async (e) => {
+          e.preventDefault();
+          if (inputUsername.trim()) {
+            setLoading(true);
+            setError(null);
+            setRepos([]);
+            // Instead of clearing the entire container we reset the commit and file boxes
+            document.getElementById('commitBox').innerHTML = "<p>Click on a repository or branch node to see commits</p>";
+            document.getElementById('fileListBox').innerHTML = "<p>Click on a repository or branch node to see files</p>";
+            try {
+              const response = await fetch(`https://api.github.com/users/${inputUsername.trim()}/repos?per_page=100`);
+              if (!response.ok) {
+                throw new Error('GitHub API error code ' + response.status);
+              }
+              const data = await response.json();
+              // Sort repositories by last update date (latest first)
+              data.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+              setRepos(data);
+              setUsername(inputUsername.trim());
+            } catch (err) {
+              setError('Failed to fetch repositories: ' + err.message);
+            } finally {
+              setLoading(false);
+            }
+          }
+        };
+
+        // When repositories update, build the graph
+        useEffect(() => {
+          if (repos.length > 0) {
+            buildInitialGraph();
+          }
+        }, [repos]);
+
+        return (
+          <div>
+            <header className="header">
+              <h1><i className="fa-brands fa-github"></i> GitHub Repository Explorer</h1>
+            </header>
+            <div className="container">
+              <form onSubmit={handleSubmit} className="search-container">
+                <input
+                  type="text"
+                  value={inputUsername}
+                  onChange={(e) => setInputUsername(e.target.value)}
+                  placeholder="Enter GitHub username"
+                  aria-label="GitHub username"
+                />
+                <button type="submit" disabled={loading || !inputUsername.trim()}>
+                  {loading ? <i className="fa-solid fa-spinner fa-spin"></i> : <i className="fa-solid fa-search"></i>}
+                  Search
+                </button>
+              </form>
+              {error && <div className="error-message">{error}</div>}
+              <h2>Node Diagram Map</h2>
+              <div id="network"></div>
+              <div id="commitContainer">
+                <div id="commitBox">
+                  <p>Click on a repository or branch node to see commits</p>
+                </div>
+                <div id="fileListBox">
+                  <p>Click on a repository or branch node to see files</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+  </body>
+</html>
